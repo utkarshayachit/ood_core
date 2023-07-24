@@ -134,10 +134,45 @@ module OodCore
             <<-EOT.gsub(/^ {14}/, "")
               #{super}
 
+              # function to start websockify on a given port
+              # websockify is *not* started in daemon mode instead just backgrounded.
+              # this avoids changed to PPID and ensure it gets cleaned up correctly.
+              start_websockify() {
+                local ws_port=$1
+                #{websockify_cmd} $ws_port localhost:${port} >> ./websockify.log 2>&1 &
+              }
+
+              # function to start websockify on an available port in range [#{min_port}..#{max_port}]
+              safe_start_websockify() {
+                # Generate a shuffled list of port numbers in the range #{min_port}..#{max_port}
+                local port_range=($(seq #{min_port} #{max_port} | shuf))
+
+                echo "websockify: attempting to start on port in range [#{min_port}..#{max_port}] (see websockify.log for details)" >&2
+
+                # Variable to store the chosen port
+                local chosen_port=""
+                for ws_port in "${port_range[@]}"; do
+                  if start_websockify $ws_port; then
+                    echo "Websockify started on port $ws_port" >&2
+                    chosen_port=$ws_port
+                    break
+                  fi
+                done
+                if [ -n "$chosen_port" ]; then
+                  echo "$chosen_port"
+                else
+                  echo "Error: Unable to start websockify on any port in the range #{min_port}..#{max_port}." >&2
+                  exit 127
+                fi
+              }
+
               # Launch websockify websocket server
               echo "Starting websocket server..."
-              websocket=$(find_port)
-              #{websockify_cmd} -D ${websocket} localhost:${port}
+              websocket=$(safe_start_websockify)
+              if [ -z "$websocket" ]; then
+                echo "websockify cannot be started; giving up!"
+                clean_up 1
+              fi
 
               # Set up background process that scans the log file for successful
               # connections by users, and change the password after every
@@ -154,11 +189,32 @@ module OodCore
 
           # Clean up the running VNC server and any other stale VNC servers
           def clean_script
+            websockify_cmd = context.fetch(:websockify_cmd, "${WEBSOCKIFY_CMD:-/opt/websockify/run}").to_s
+
             <<-EOT.gsub(/^ {14}/, "")
               #{super}
 
               #{vnc_clean}
               [[ -n ${display} ]] && vncserver -kill :${display}
+
+              find_websockify_pid() {
+                local ws_port=$1
+                # this matches command line used in start_websockify().
+                local command_line="#{websockify_cmd} $ws_port"
+                local pid=$(ps -eo pid,cmd | grep "$command_line" | grep -v grep | awk '{print \$1}')
+                echo "$pid"
+              }
+
+              # cleanup websockify, if started
+              if [ -n "$websocket" ]; then
+                ws_pid=$(find_websockify_pid ${websocket})
+                if [ -z "$ws_pid" ]; then
+                  echo "[warning] websockify process not found!" >&2
+                else
+                  echo "[info] killing websockify [pid=$ws_pid]" >&2
+                  kill $ws_pid
+                fi
+              fi
             EOT
           end
 
