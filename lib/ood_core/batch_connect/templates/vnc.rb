@@ -139,7 +139,7 @@ module OodCore
               start_websockify() {
                 local log_file="./websockify.log"
                 # launch websockify in background and redirect all output to a file.
-                #{websockify_cmd} $1 $2 &> $log_file &
+                #{websockify_cmd} -v $1 $2 &> $log_file &
                 local ws_pid=$!
                 local counter=0
 
